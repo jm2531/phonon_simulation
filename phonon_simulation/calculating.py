@@ -255,6 +255,74 @@ def calculate_2d_modes(
     return mesh_dict, result, normal_modes
 
 
+def calculate_2d_modes2(
+    system: Lattice2DSystem,
+    *,
+    vacancy: bool = False,
+) -> tuple[dict[str, np.ndarray], PhononSystem2DResult, NormalMode2DResult]:
+    """
+    Calculate the phonon modes for a 2D lattice system using a large unit cell approach.
+
+    This function creates a large unit cell of size n_repeatsa * n_repeatsb atoms,
+    and uses an identity supercell matrix. The mesh size is adjusted to produce
+    a similar q-point density as calculate_2d_modes.
+    """
+    # Build positions for the large unit cell
+    positions = []
+    for i in range(system.n_repeatsa):
+        for j in range(system.n_repeatsb):
+            pos = (
+                np.array(system.lattice_vector_a) * i
+                + np.array(system.lattice_vector_b) * j
+            )
+            positions.append(pos)
+    positions = np.array(positions)
+
+    # Create the large unit cell
+    symbols = [system.element] * len(positions)
+    cell = PhonopyAtoms(
+        symbols=symbols,
+        cell=[
+            (np.array(system.lattice_vector_a) * system.n_repeatsa).tolist(),
+            (np.array(system.lattice_vector_b) * system.n_repeatsb).tolist(),
+            [0, 0, 1],
+        ],
+        positions=positions,
+    )
+
+    # Use identity supercell matrix (no repetition)
+    supercell_matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    phonon = Phonopy(unitcell=cell, supercell_matrix=supercell_matrix)
+    positions = phonon.supercell.get_positions()
+
+    temp_result = PhononSystem2DResult(cell=cell, phonon=phonon, positions=positions)
+    fc = build_force_constants_2d(system, temp_result, vacancy=vacancy)
+    phonon.force_constants = fc
+
+    # Use a much smaller mesh size to get equivalent density
+    # For a large unit cell, mesh [1,1,1] gives roughly the same q-point density
+    # as mesh [n_repeatsa, n_repeatsb, 1] in the primitive cell approach
+    mesh = [8, 8, 1]
+
+    phonon.run_mesh(
+        mesh, with_eigenvectors=True, is_mesh_symmetry=False, is_gamma_center=True
+    )
+    mesh_dict: dict[str, np.ndarray] = phonon.get_mesh_dict()
+    positions = phonon.supercell.get_positions()
+    result = PhononSystem2DResult(cell=cell, phonon=phonon, positions=positions)
+
+    frequencies = mesh_dict["frequencies"]
+    eigenvectors = mesh_dict["eigenvectors"]
+    qpoints = mesh_dict["qpoints"]
+    normal_modes = NormalMode2DResult(
+        system=system,
+        frequencies=frequencies,
+        eigenvectors=eigenvectors,
+        qpoints=qpoints,
+    )
+    return mesh_dict, result, normal_modes
+
+
 @dataclass(kw_only=True, frozen=True)
 class NormalMode2DResult:
     """
@@ -294,42 +362,47 @@ class NormalMode2DResult:
         np.set_printoptions(
             threshold=10000000000
         )  # Large to ensure all are printed out with no truncation
+        print(self.eigenvectors.shape)
         return (
             f"Normal modes for system: {self.system}\n"
-            f"Frequencies (THz):\n{np.array2string(self.frequencies, precision=6, separator=', ')}"
-            f"q-points:\n{np.array2string(self.qpoints, precision=6, separator=', ')}"
-            f"Eigenvectors:\n{np.array2string(self.eigenvectors, precision=3, separator=', ')}"
+            f"Frequencies (THz) shape:\n{self.frequencies.shape}\n"
+            f"q-points shape:\n{self.qpoints.shape}\n"
+            f"Eigenvectors shape:\n{self.eigenvectors.shape}\n"
         )
 
 
 def find_central_atom_index(
     system: Lattice2DSystem,
     positions: np.ndarray,
-    a_vec: np.ndarray,
-    b_vec: np.ndarray,
 ) -> int:
     """
     Find the index of the central atom in a 2D lattice.
 
     Parameters
     ----------
+    system : Lattice2DSystem
+        The 2D lattice system for which the central atom is to be found.
     positions : np.ndarray
         Array of atomic positions in the supercell.
-    a_vec : np.ndarray
-        Lattice vector along the a direction.
-    b_vec : np.ndarray
-        Lattice vector along the b direction.
 
     Returns
     -------
     int
         The index of the central atom.
     """
-    cellsizea = system.n_repeatsa * a_vec
-    cellsizeb = system.n_repeatsb * b_vec
-    center_position = (cellsizea + cellsizeb) / 2.0
-    distances = np.linalg.norm(positions - center_position, axis=1)
-    return int(np.argmin(distances))
+    # Calculate center of supercell
+    center = (
+        np.array(system.lattice_vector_a) * system.n_repeatsa / 2
+        + np.array(system.lattice_vector_b) * system.n_repeatsb / 2
+    )
+    # Find atom closest to center
+    distances = np.linalg.norm(positions - center, axis=1)
+    central_atom_index = int(np.argmin(distances))
+
+    print(
+        f"Central atom identified at index {central_atom_index}, position {positions[central_atom_index]}"
+    )
+    return central_atom_index
 
 
 def find_lattice_bond_pairs(

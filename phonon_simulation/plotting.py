@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
 
 from phonon_simulation.calculating import (
     find_central_atom_index,
@@ -248,7 +249,7 @@ def plot_2d_dispersion_band_and_mesh(  # noqa: PLR0914
     labels : list[str]
         List of labels for the high-symmetry points along the path.
     system : Lattice2DSystem
-        The 2D lattice system being analyzed.
+        The 2D lattice system being analysed.
     n_mesh_points : int
         Number of mesh points to interpolate along the path.
 
@@ -331,7 +332,7 @@ def plot_2d_dispersion_band(
     phonon : Phonopy
         Phonopy object containing phonon calculation results.
     system : Lattice2DSystem
-        The 2D lattice system being analyzed.
+        The 2D lattice system being analysed.
     path : np.ndarray
         Array of q-points defining the path in reciprocal space.
     labels : list[str]
@@ -388,7 +389,7 @@ def plot_2d_dispersion_mesh(
     phonon : Phonopy
         Phonopy object containing phonon calculation results.
     system : Lattice2DSystem
-        The 2D lattice system being analyzed.
+        The 2D lattice system being analysed.
     path : np.ndarray
         Array of q-points defining the path in reciprocal space.
     labels : list[str]
@@ -478,46 +479,82 @@ def interpolate_path(path: np.ndarray, n_points: int) -> np.ndarray:
 def plot_2d_mesh_3d_scatter(
     mesh_dict: dict[str, np.ndarray],
     system: Lattice2DSystem,
-) -> tuple[
-    Figure, Axes
-]:  # Currently a copilot generated function just to check that mesh gives expected results, will rewrite properly when vacancies are working
+) -> tuple[Figure, Axes]:
     """
-    Plot a 3D scatter of mesh q-points (qx, qy) vs frequency (z).
+    Plot the mesh frequencies as a 3D scatter plot for a 2D lattice system along a specified path in the First Brillouin zone.
 
     Parameters
     ----------
     mesh_dict : dict[str, np.ndarray]
         Dictionary containing mesh data (q-points and frequencies).
     system : Lattice2DSystem
-        The 2D lattice system being analyzed.
+        The 2D lattice system being analysed.
 
     Returns
     -------
     tuple[Figure, Axes]
         Matplotlib Figure and Axes objects for the plot.
     """
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
     qpoints = mesh_dict["qpoints"]
     freqs = mesh_dict["frequencies"]
+
+    qx = qpoints[:, 0]
+    qy = qpoints[:, 1]
 
     fig = plt.figure(figsize=(10, 7))
     ax = fig.add_subplot(111, projection="3d")
 
-    # Flatten arrays for scatter
-    qx = qpoints[:, 0]
-    qy = qpoints[:, 1]
+    colors = plt.get_cmap("tab10").colors
+    scatters = []
+    handles = []
     for band in range(freqs.shape[1]):
-        ax.scatter(qx, qy, freqs[:, band], s=8, label=f"Band {band + 1}")
+        z = freqs[:, band]
+        color = colors[band % len(colors)]
+        scatter = ax.scatter(
+            qx,
+            qy,
+            z,
+            color=color,
+            alpha=0.7,
+            label=f"Band {band + 1}",
+            picker=True,
+        )
+        scatters.append(scatter)
+        handles.append(
+            Patch(facecolor=color, edgecolor="k", label=f"Band {band + 1}", alpha=0.7)
+        )
 
     ax.set_xlabel(r"$q_x$")
     ax.set_ylabel(r"$q_y$")
     ax.set_zlabel("Frequency (THz)")
     ax.set_title(
-        f"Phonon mesh: {system.n_repeatsa}x{system.n_repeatsb} supercell of {system.element}"
+        f"Phonon mesh scatter: {system.n_repeatsa}x{system.n_repeatsb} supercell of {system.element}"
     )
-    ax.legend()
+
+    leg = ax.legend(
+        handles=handles,
+        loc="upper left",
+        bbox_to_anchor=(1.05, 1),
+        title="Bands",
+        fancybox=True,
+    )
     fig.tight_layout()
+
+    # Interactivity: toggle band visibility on legend click
+    def legend_pick(event) -> None:
+        for i, legpatch in enumerate(leg.legend_handles):
+            if event.artist == legpatch:
+                scatter = scatters[i]
+                visible = not scatter.get_visible()
+                scatter.set_visible(visible)
+                legpatch.set_alpha(1.0 if visible else 0.2)
+                fig.canvas.draw_idle()
+                break
+
+    for legpatch in leg.legend_handles:
+        legpatch.set_picker(True)
+    fig.canvas.mpl_connect("pick_event", legend_pick)
+
     return fig, ax
 
 
@@ -528,13 +565,20 @@ def plot_2d_mesh_3d_surface(
     Figure, Axes
 ]:  # Currently a copilot generated function just to check that mesh gives expected results, will rewrite properly when vacancies are working
     """
-    Plot a 3D surface of mesh q-points (qx, qy) vs frequency (z), with each band a different uniform color,
-    surfaces transparent, and legend entries that can toggle band visibility.
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    Plot the mesh frequencies surfaces as a 3D surface plot for a 2D lattice system along a specified path in the First Brillouin zone.
 
+    Parameters
+    ----------
+    mesh_dict : dict[str, np.ndarray]
+        Dictionary containing mesh data (q-points and frequencies).
+    system : Lattice2DSystem
+        The 2D lattice system being analysed.
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects for the plot.
+    """
     qpoints = mesh_dict["qpoints"]
     freqs = mesh_dict["frequencies"]
 
@@ -723,4 +767,119 @@ def plot_mesh_frequency_difference(
     cbar = fig.colorbar(mappable_for_cb, ax=ax, shrink=0.6, pad=0.1)
     cbar.set_label("Frequency Difference (THz)")
 
+    return fig, ax
+
+
+def plot_vacancy_lattice(
+    result: PhononSystem2DResult,
+    system: Lattice2DSystem,
+) -> tuple[Figure, Axes]:
+    """
+    Plot a 2D lattice structure with a vacancy, highlighting the vacancy site and showing the distortion of bonds around it.
+
+    Parameters
+    ----------
+    result : PhononSystem2DResult
+        The result object from calculate_2d_modes_with_vacancy.
+    system : Lattice2DSystem
+        The 2D lattice system being plotted.
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        The matplotlib Figure and Axes objects for the plot.
+    """
+    positions = result.get_positions()
+
+    # Calculate where the vacancy would be (center of supercell)
+    a_vec = np.array(system.lattice_vector_a)
+    b_vec = np.array(system.lattice_vector_b)
+    cellsizea = system.n_repeatsa * a_vec
+    cellsizeb = system.n_repeatsb * b_vec
+    (cellsizea + cellsizeb) / 2.0
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    # Plot atoms
+    ax.scatter(positions[:, 0], positions[:, 1], s=60, c="black", label="Atoms")
+
+    # Find bonds
+    nn_pairs, nnn_pairs = find_lattice_bond_pairs(positions, system, vacancy=True)
+
+    # Get force constants for all bonds
+    fc = build_force_constants_2d(system, result, vacancy=True)
+
+    # Plot nearest neighbor bonds (orange, fixed alpha)
+    for i, j in nn_pairs:
+        ax.plot(
+            [positions[i, 0], positions[j, 0]],
+            [positions[i, 1], positions[j, 1]],
+            color="orange",
+            linewidth=1.5,
+            alpha=0.8,
+            solid_capstyle="round",
+            label="NN bond" if (i, j) == nn_pairs[0] else None,
+        )
+
+    # Calculate relative size of NNN force constants for transparency
+    nnn_strengths = []
+    for i, j in nnn_pairs:
+        # Use Frobenius norm of the force constant matrix for this bond
+        fc_val = np.linalg.norm(fc[i, j])
+        nnn_strengths.append(fc_val)
+    nnn_strengths = np.array(nnn_strengths)
+    # Avoid division by zero
+    if np.max(nnn_strengths) > 0:
+        nnn_alphas = nnn_strengths / np.max(nnn_strengths)
+    else:
+        nnn_alphas = np.ones_like(nnn_strengths)
+
+    # Plot next-nearest neighbor bonds with alpha proportional to force constant
+    for idx, (i, j) in enumerate(nnn_pairs):
+        ax.plot(
+            [positions[i, 0], positions[j, 0]],
+            [positions[i, 1], positions[j, 1]],
+            color="blue",
+            linewidth=1.5,
+            alpha=nnn_alphas[idx],
+            linestyle="--",
+            solid_capstyle="round",
+            label="NNN bond" if idx == 0 else None,
+        )
+
+    # Set plot limits
+    margin = 1.0
+    x_min, x_max = (
+        positions[:, 0].min() - margin,
+        positions[:, 0].max() + margin,
+    )
+    y_min, y_max = (
+        positions[:, 1].min() - margin,
+        positions[:, 1].max() + margin,
+    )
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+
+    # Add title and labels
+    ax.set_title(
+        f"{system.n_repeatsa}x{system.n_repeatsb} {system.element} supercell with vacancy",
+        fontsize=14,
+    )
+    ax.set_xlabel("x (Å)", fontsize=12)
+    ax.set_ylabel("y (Å)", fontsize=12)
+    ax.set_aspect("equal")
+
+    # Create a legend without duplicates
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles, strict=False))
+    ax.legend(
+        by_label.values(),
+        by_label.keys(),
+        loc="upper right",
+        frameon=True,
+        fancybox=True,
+        framealpha=0.8,
+    )
+
+    fig.tight_layout()
     return fig, ax
